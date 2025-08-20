@@ -1,3 +1,4 @@
+
 # Day_5
 # Write a python program to input ‘n’ employee salaries and find the minimum and maximum salary amongst ‘n’ employees
 n = int(input("Enter the number of employees: "))
@@ -35,3 +36,4 @@ def display_employees(employee):
 n = int(input("Enter the number of employees: "))
 employees = e_data(n)
 display_employees(employees)
+
