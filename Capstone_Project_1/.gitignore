@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+capstone_venv/
+
+# Jupyter
+.ipynb_checkpoints
+
+# Artifacts (if you don't want model in repo)
+artifacts/
+*.joblib
+
+# OS
+Thumbs.db
+.DS_Store
