@@ -1,99 +1,98 @@
+# Capstone_Project_1/preprocessing_helpers.py
 """
-preprocessing_helpers.py
+Backward-compatible QuantileClipper.
 
-Robust QuantileClipper implementation compatible with different pickled pipeline variants.
-
-This class exposes both attribute styles that older/newer pickles might expect:
- - lower_bounds_ / upper_bounds_
- - lower_ / upper_
-
-That helps when unpickling model artifacts created with slightly different versions.
+This version is intentionally tolerant of older saved pickles that used
+different internal attribute names (lower/upper, lower_quantile/upper_quantile,
+lower_, lower_bounds_, etc.). It sets multiple attribute names on fit()
+so older pickles and newer code both work.
 """
-from typing import Optional, List, Dict
+
 import numpy as np
-import pandas as pd
-from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.base import TransformerMixin, BaseEstimator
 
 
 class QuantileClipper(BaseEstimator, TransformerMixin):
-    def __init__(self, lower_quantile: float = 0.01, upper_quantile: float = 0.99, columns: Optional[List[str]] = None):
-        self.lower_quantile = float(lower_quantile)
-        self.upper_quantile = float(upper_quantile)
-        self.columns = columns
+    """
+    Clips numeric features column-wise to the quantile range learned from the training data.
 
-        # We'll populate both naming styles so unpickling works regardless of saved attribute names
-        self.lower_bounds_ = None  # numpy array or dict
-        self.upper_bounds_ = None
+    Backwards compatibility notes:
+    - older variants used attribute names like `lower`/`upper` or `lower_quantile`/`upper_quantile`
+    - this implementation sets all of those names so unpickling older objects works.
+    """
+
+    def __init__(self, lower_quantile: float = None, upper_quantile: float = None, lower: float = None, upper: float = None):
+        # Accept older param names as aliases
+        if lower_quantile is None and lower is not None:
+            lower_quantile = lower
+        if upper_quantile is None and upper is not None:
+            upper_quantile = upper
+
+        self.lower_quantile = 0.01 if lower_quantile is None else float(lower_quantile)
+        self.upper_quantile = 0.99 if upper_quantile is None else float(upper_quantile)
+
+        # historic aliases
+        self.lower = float(self.lower_quantile)
+        self.upper = float(self.upper_quantile)
+
+        # placeholders to be created in fit()
         self.lower_ = None
         self.upper_ = None
+        self.lower_bounds_ = None
+        self.upper_bounds_ = None
 
     def fit(self, X, y=None):
-        # Accept DataFrame or 2D array
-        if not isinstance(X, (pd.DataFrame, pd.Series)):
-            X = pd.DataFrame(X)
+        X_arr = np.asarray(X, dtype=float)
 
-        if isinstance(X, pd.Series):
-            X = X.to_frame()
+        # store quantile values under multiple attribute names
+        self.lower_ = float(self.lower_quantile)
+        self.upper_ = float(self.upper_quantile)
+        self.lower = self.lower_
+        self.upper = self.upper_
 
-        # Choose numeric columns by default
-        cols = list(self.columns) if self.columns else X.select_dtypes(include=[np.number]).columns.tolist()
+        # compute bounds (nanquantile tolerates NaNs)
+        try:
+            lb = np.nanquantile(X_arr, self.lower_, axis=0)
+            ub = np.nanquantile(X_arr, self.upper_, axis=0)
+        except Exception:
+            X2 = X_arr.reshape(-1, 1)
+            lb = np.nanquantile(X2, self.lower_, axis=0)
+            ub = np.nanquantile(X2, self.upper_, axis=0)
 
-        # compute per-column quantiles and store in dict and arrays
-        lower_dict: Dict[str, float] = {}
-        upper_dict: Dict[str, float] = {}
-
-        for c in cols:
-            if c not in X.columns or X[c].dropna().shape[0] == 0:
-                lower_dict[c] = 0.0
-                upper_dict[c] = 0.0
-            else:
-                col = pd.to_numeric(X[c], errors="coerce").dropna()
-                lower_dict[c] = float(np.nanquantile(col, self.lower_quantile))
-                upper_dict[c] = float(np.nanquantile(col, self.upper_quantile))
-
-        # store as dicts
-        self.lower_ = lower_dict.copy()
-        self.upper_ = upper_dict.copy()
-
-        # also store as numpy arrays and aligned list for compatibility if caller expects arrays
-        cols_sorted = cols
-        self._cols_order = cols_sorted
-        self.lower_bounds_ = np.array([lower_dict[c] for c in cols_sorted], dtype=float)
-        self.upper_bounds_ = np.array([upper_dict[c] for c in cols_sorted], dtype=float)
+        # set bounds with multiple attribute names (compat)
+        self.lower_bounds_ = np.asarray(lb, dtype=float)
+        self.upper_bounds_ = np.asarray(ub, dtype=float)
+        self.lower_bounds = self.lower_bounds_
+        self.upper_bounds = self.upper_bounds_
 
         return self
 
     def transform(self, X):
-        if not isinstance(X, (pd.DataFrame, pd.Series)):
-            X = pd.DataFrame(X)
+        # If unpickled object used other attribute names, try to pick them up
+        if getattr(self, "lower_bounds_", None) is None or getattr(self, "upper_bounds_", None) is None:
+            lb = getattr(self, "lower_bounds", None)
+            ub = getattr(self, "upper_bounds", None)
+            if lb is None or ub is None:
+                raise AttributeError("QuantileClipper appears not fitted: missing bounds.")
+            self.lower_bounds_ = np.asarray(lb, dtype=float)
+            self.upper_bounds_ = np.asarray(ub, dtype=float)
 
-        if isinstance(X, pd.Series):
-            X = X.to_frame()
+        X_arr = np.asarray(X, dtype=float).copy()
+        lb = np.asarray(self.lower_bounds_, dtype=float)
+        ub = np.asarray(self.upper_bounds_, dtype=float)
 
-        Xc = X.copy()
+        if X_arr.ndim == 1:
+            X_arr = X_arr.reshape(1, -1)
 
-        # If we have dict-style bounds, apply them column-by-column
-        if isinstance(self.lower_, dict) and len(self.lower_) > 0:
-            for c, low in self.lower_.items():
-                high = self.upper_.get(c, low)
-                if c in Xc.columns:
-                    try:
-                        Xc[c] = pd.to_numeric(Xc[c], errors="coerce")
-                        Xc[c] = Xc[c].clip(lower=low, upper=high)
-                    except Exception:
-                        # If casting fails, skip quietly
-                        pass
-        else:
-            # fallback: apply array-style clipping for numeric columns in stored order
-            if getattr(self, "_cols_order", None) is None:
-                return Xc
-            for idx, c in enumerate(self._cols_order):
-                low = float(self.lower_bounds_[idx])
-                high = float(self.upper_bounds_[idx])
-                if c in Xc.columns:
-                    try:
-                        Xc[c] = pd.to_numeric(Xc[c], errors="coerce")
-                        Xc[c] = Xc[c].clip(lower=low, upper=high)
-                    except Exception:
-                        pass
-        return Xc
+        # If bounds are scalar, broadcast
+        if X_arr.shape[1] != lb.shape[0]:
+            if lb.size == 1:
+                lb = np.full((X_arr.shape[1],), lb.item())
+            if ub.size == 1:
+                ub = np.full((X_arr.shape[1],), ub.item())
+            if X_arr.shape[1] != lb.shape[0]:
+                raise ValueError(f"QuantileClipper: X has {X_arr.shape[1]} cols but bounds length is {lb.shape[0]}")
+
+        X_clipped = np.maximum(X_arr, lb)
+        X_clipped = np.minimum(X_clipped, ub)
+        return X_clipped
