@@ -1,20 +1,31 @@
-# app.py
-from preprocessing_helpers import QuantileClipper  # must be available before unpickling
+# app.py - simple FastAPI wrapper to serve the model as an API
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import joblib
-import pandas as pd
 import os
-from typing import Optional
+import pandas as pd
+import sys
 
-MODEL_PATH = "artifacts/final_ridge_pipeline.joblib"
+# ensure package import for unpickling
+try:
+    from Capstone_Project_1.preprocessing_helpers import QuantileClipper
+except Exception:
+    try:
+        from preprocessing_helpers import QuantileClipper
+    except Exception:
+        base = os.path.dirname(__file__)
+        if base not in sys.path:
+            sys.path.insert(0, base)
+        from preprocessing_helpers import QuantileClipper
+
+MODEL_PATH = "Capstone_Project_1/artifacts/final_ridge_pipeline.joblib"
+
 if not os.path.exists(MODEL_PATH):
-    raise FileNotFoundError(f"Model not found at {MODEL_PATH}. Run notebook save step first.")
+    raise FileNotFoundError(f"Model not found at {MODEL_PATH}, add or move final_ridge_pipeline.joblib to that path.")
 
-# Load model once at startup
 model = joblib.load(MODEL_PATH)
 
-app = FastAPI(title="Manufacturing Output Prediction API", version="1.0")
+app = FastAPI(title="Manufacturing Output Prediction API")
 
 class PredictRequest(BaseModel):
     Injection_Temperature: float
@@ -30,26 +41,26 @@ class PredictRequest(BaseModel):
     Machine_Type: str
     Material_Grade: str
     Day_of_Week: str
-    Temperature_Pressure_Ratio: Optional[float] = None
-    Total_Cycle_Time: Optional[float] = None
-    Efficiency_Score: Optional[float] = None
-    Machine_Utilization: Optional[float] = None
+    date: str
+    hour: int
 
 @app.get("/")
 def root():
-    return {"message": "Manufacturing Output Prediction API", "model_file": os.path.basename(MODEL_PATH)}
+    return {"message": "Manufacturing Output Prediction API"}
 
 @app.post("/predict/")
-def predict(payload: PredictRequest):
+def predict(req: PredictRequest):
     try:
-        data = payload.dict()
-        if data.get("Temperature_Pressure_Ratio") is None:
-            data["Temperature_Pressure_Ratio"] = data["Injection_Temperature"] / (data["Injection_Pressure"] + 1e-6)
-        if data.get("Total_Cycle_Time") is None:
-            data["Total_Cycle_Time"] = data["Cycle_Time"] + data["Cooling_Time"]
+        data = req.dict()
+        # derive features similarly as streamlit app
+        data["Total_Cycle_Time"] = data["Cycle_Time"] + data["Cooling_Time"]
+        data["Cycle_Cooling_Ratio"] = data["Cycle_Time"] / (data["Cooling_Time"] + 1e-6)
+        data["Temp_Pressure_Product"] = data["Injection_Temperature"] * data["Injection_Pressure"]
+        data["Temperature_Pressure_Ratio"] = data["Injection_Temperature"] / (data["Injection_Pressure"] + 1e-6)
 
-        df = pd.DataFrame([data])
-        pred = model.predict(df)
-        return {"Predicted_Parts_Per_Hour": float(pred[0])}
+        # build DataFrame with one row
+        X = pd.DataFrame([data])
+        pred = model.predict(X)
+        return {"predicted_parts_per_hour": float(pred[0])}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
