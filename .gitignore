@@ -24,3 +24,5 @@ ENV/
 
 # API Keys / Secrets
 .env
+# ignore virtualenvs for heart project
+Heart_Disease_Project/.venv/
