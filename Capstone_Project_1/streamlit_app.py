@@ -1,5 +1,7 @@
 # Capstone_Project_1/streamlit_app.py
 import os
+from Capstone_Project_1.preprocessing_helpers import QuantileClipper
+
 import json
 from datetime import date, datetime
 from io import StringIO
