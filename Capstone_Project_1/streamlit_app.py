@@ -1,13 +1,11 @@
 # Capstone_Project_1/streamlit_app.py
-# Full streamlit app with robust QuantileClipper import diagnostics and polished UI
+# Full Streamlit app with robust import diagnostics and secure UI inputs.
 
-# --- robust import + diagnostics for QuantileClipper (paste at very top of streamlit_app.py) ---
+# -------------------- Robust import + startup diagnostics --------------------
 import os, sys, logging, json
-
 def write_diag(msg):
     try:
         logging.error(msg)
-        # write also to tmp file so Streamlit logs show it clearly
         with open("/tmp/streamlit_startup_diagnostic.txt", "a") as f:
             f.write(msg + "\n")
     except Exception:
@@ -19,12 +17,9 @@ try:
     write_diag("LISTING CWD: " + str(os.listdir(".")))
 except Exception as e:
     write_diag("LISTING CWD FAILED: " + str(e))
-
 write_diag("sys.path (first 15 entries):")
 for p in sys.path[:15]:
     write_diag("  " + str(p))
-
-# list top-level dirs in repo
 try:
     top = [d for d in os.listdir(".") if os.path.isdir(d)]
     write_diag("Top-level directories: " + json.dumps(top))
@@ -34,7 +29,7 @@ except Exception as e:
 QuantileClipper = None
 _import_errors = {}
 
-# Try package import (preferred)
+# Preferred package import
 try:
     from Capstone_Project_1.preprocessing_helpers import QuantileClipper as QC_pkg
     QuantileClipper = QC_pkg
@@ -43,7 +38,7 @@ except Exception as e:
     _import_errors["pkg"] = repr(e)
     write_diag("FAILED import Capstone_Project_1.preprocessing_helpers: " + repr(e))
 
-# Fallback: local import
+# Local fallback
 if QuantileClipper is None:
     try:
         from preprocessing_helpers import QuantileClipper as QC_local
@@ -53,7 +48,7 @@ if QuantileClipper is None:
         _import_errors["local"] = repr(e)
         write_diag("FAILED import preprocessing_helpers: " + repr(e))
 
-# Try alternate case folder names (common accidental mismatch)
+# Try some common alternate case variations
 if QuantileClipper is None:
     for alt in ["capstone_project_1", "Capstone_project_1", "capstone_Project_1", "Capstone_Project_1"]:
         try:
@@ -69,22 +64,21 @@ if QuantileClipper is None:
 if QuantileClipper is None:
     write_diag("All import attempts failed. Import error summary: " + json.dumps(_import_errors))
     raise ModuleNotFoundError(
-        "QuantileClipper import failed. Check that file Capstone_Project_1/preprocessing_helpers.py exists, "
-        "__init__.py is present in Capstone_Project_1/, and that folder name capitalization is exact. "
-        "See /tmp/streamlit_startup_diagnostic.txt in the logs for details."
+        "QuantileClipper import failed. Ensure Capstone_Project_1/preprocessing_helpers.py exists, "
+        "__init__.py is present in Capstone_Project_1/, and folder casing is exact. "
+        "See /tmp/streamlit_startup_diagnostic.txt in logs for details."
     )
 
-# expose QuantileClipper in globals (helps joblib unpickle find it)
+# Expose symbol in globals (helps joblib unpickle)
 globals()["QuantileClipper"] = QuantileClipper
 
-# -------------------- Now normal app imports --------------------
+# -------------------- Normal app imports --------------------
 import pandas as pd
 import numpy as np
 import joblib
 import streamlit as st
 import matplotlib.pyplot as plt
 from datetime import date, datetime, time
-from io import StringIO
 
 # ---------- configuration ----------
 BASE_DIR = os.path.dirname(__file__)
@@ -95,32 +89,21 @@ METADATA_PATH = os.path.join(ARTIFACT_DIR, "model_metadata.json")
 
 st.set_page_config(page_title="Manufacturing Output Predictor", layout="wide", page_icon="🏭")
 
-# ---------- small CSS for nicer cards ----------
 st.markdown(
     """
     <style>
-    .big-result {
-        background: linear-gradient(90deg,#114b29,#0d3b27);
-        color: #fff;
-        padding: 18px;
-        border-radius: 12px;
-        font-size: 20px;
-        box-shadow: 0 6px 18px rgba(0,0,0,0.3);
-    }
+    .big-result { background: linear-gradient(90deg,#114b29,#0d3b27); color: #fff; padding: 18px; border-radius: 12px; font-size: 20px; box-shadow: 0 6px 18px rgba(0,0,0,0.3); }
     .muted { color:#9aa0a6; font-size:12px }
     .card { background: #0f1113; padding:12px; border-radius:10px; color: #e6eef6; }
-    .btn-red { color: #fff; background: #9b1e1e; padding:6px 10px; border-radius:8px; }
     </style>
-    """,
-    unsafe_allow_html=True,
-)
+    """, unsafe_allow_html=True)
 
 # ---------- helpers ----------
 def load_model(path=MODEL_PATH):
     if not os.path.exists(path):
         st.error(f"Model not found at: {path}")
         st.stop()
-    # joblib.load will need QuantileClipper available in globals (we set it above)
+    # joblib.load will find QuantileClipper in globals()
     model = joblib.load(path)
     return model
 
@@ -151,7 +134,7 @@ def prepare_input_row(inputs, feature_columns):
     p = float(d.get("Injection_Pressure", 1))
     d["Temperature_Pressure_Ratio"] = float(d.get("Injection_Temperature", 0)) / (p + 1e-9)
 
-    # date/time features
+    # date/time
     sample_date = d.get("date", date.today())
     if isinstance(sample_date, str):
         try:
@@ -169,7 +152,6 @@ def prepare_input_row(inputs, feature_columns):
     d["Year"] = dt.year
     d["DayOfWeek_num"] = dt.weekday()
 
-    # Build DataFrame and add missing columns if feature list present
     df = pd.DataFrame([d])
     if feature_columns:
         for c in feature_columns:
@@ -177,7 +159,6 @@ def prepare_input_row(inputs, feature_columns):
                 df[c] = 0
         df = df[feature_columns]
 
-    # convert numeric-like columns
     for col in df.columns:
         try:
             df[col] = pd.to_numeric(df[col], errors="ignore")
@@ -193,7 +174,7 @@ def compute_local_contributions(model, X_row, feature_columns):
     try:
         inner = model.regressor_
         lin = inner.named_steps.get("model", None)
-        if lin is None or not hasattr(lin, "coef_") or feature_columns is None:
+        if lin is None or not hasattr(lin, "coef_") or not feature_columns:
             return []
         coef = np.array(lin.coef_)
         if len(coef) != len(feature_columns):
@@ -205,27 +186,24 @@ def compute_local_contributions(model, X_row, feature_columns):
     except Exception:
         return []
 
-# ---------- app header ----------
+# -------------------- App Header --------------------
 st.title("🏭 Manufacturing Output Predictor")
 st.markdown("Predict parts produced per hour from process settings — visual, fast and explainable.")
 
-# load artifacts
+# load model & artifacts (fail gracefully)
 model = None
 feature_columns = None
 metadata = {}
-
-# try to load model and metadata, but fail gracefully with error message in UI
 try:
     feature_columns = load_feature_columns()
     metadata = load_metadata()
     model = load_model()
 except Exception as e:
     st.error(f"Model loading failed: {e}")
-    # provide link to diagnostic file in logs
     st.write("See startup diagnostics in Streamlit logs (file: /tmp/streamlit_startup_diagnostic.txt).")
     st.stop()
 
-# Top-level row: model metadata
+# model summary
 col1, col2 = st.columns([3,1])
 with col2:
     if metadata:
@@ -238,13 +216,14 @@ with col2:
         st.markdown("**Model loaded**")
         st.write("Pipeline ready")
 
-# ---------- main UI layout ----------
+# -------------------- Layout --------------------
 left, right = st.columns([1, 1.1])
 
 with left:
     st.subheader("Input controls")
     st.markdown("**Presets**")
-    preset = st.radio("Scenario", ["Balanced", "High throughput (aggressive)", "Safe (conservative)"], index=0, horizontal=True)
+    preset = st.radio("Scenario", ["Balanced", "High throughput (aggressive)", "Safe (conservative)"],
+                      index=0, horizontal=True)
 
     defaults = {
         "Balanced": {
@@ -267,27 +246,38 @@ with left:
         },
     }
 
-    vals = defaults[preset]
+    vals = defaults.get(preset, defaults["Balanced"]) or defaults["Balanced"]
 
-    Injection_Temperature = st.number_input("Injection Temperature", value=vals["Injection_Temperature"], step=0.1)
-    Injection_Pressure = st.number_input("Injection Pressure", value=vals["Injection_Pressure"], step=0.1)
-    Cycle_Time = st.number_input("Cycle Time", value=vals["Cycle_Time"], step=0.1)
-    Cooling_Time = st.number_input("Cooling Time", value=vals["Cooling_Time"], step=0.1)
-    Material_Viscosity = st.number_input("Material Viscosity", value=vals["Material_Viscosity"], step=1.0)
-    Ambient_Temperature = st.number_input("Ambient Temperature", value=vals["Ambient_Temperature"], step=0.1)
-    Machine_Age = st.number_input("Machine Age (years)", value=vals["Machine_Age"], step=1.0)
-    Operator_Experience = st.number_input("Operator Experience (years)", value=vals["Operator_Experience"], step=1.0)
-    Maintenance_Hours = st.number_input("Maintenance Hours (per month)", value=vals["Maintenance_Hours"], step=1.0)
-    Efficiency_Score = st.number_input("Efficiency Score", value=vals["Efficiency_Score"], step=0.01, format="%.2f")
-    Machine_Utilization = st.number_input("Machine Utilization", value=vals["Machine_Utilization"], step=0.01, format="%.2f")
-    sample_date = st.date_input("Sample date", value=vals["date"])
-    hour_val = st.slider("Hour of Day (0-23)", 0, 23, vals["hour"])
+    def safe_num(key, default):
+        try:
+            v = vals.get(key, default)
+            return float(v)
+        except Exception:
+            return float(default)
 
-    Shift = st.selectbox("Shift", options=["Day", "Evening", "Night"], index=["Day","Evening","Night"].index(vals["Shift"]))
-    Machine_Type = st.selectbox("Machine Type", options=["Type_A", "Type_B", "Type_C"], index=["Type_A","Type_B","Type_C"].index(vals.get("Machine_Type","Type_B")))
-    Material_Grade = st.selectbox("Material Grade", options=["Economy", "Standard", "Premium"], index=["Economy","Standard","Premium"].index(vals.get("Material_Grade","Standard")))
+    def safe_cat(key, options, default):
+        v = vals.get(key, default)
+        return v if v in options else options[0]
+
+    Injection_Temperature = st.number_input("Injection Temperature", value=safe_num("Injection_Temperature", 220.0), step=0.1)
+    Injection_Pressure = st.number_input("Injection Pressure", value=safe_num("Injection_Pressure", 130.0), step=0.1)
+    Cycle_Time = st.number_input("Cycle Time", value=safe_num("Cycle_Time", 30.0), step=0.1)
+    Cooling_Time = st.number_input("Cooling Time", value=safe_num("Cooling_Time", 12.0), step=0.1)
+    Material_Viscosity = st.number_input("Material Viscosity", value=safe_num("Material_Viscosity", 300.0), step=1.0)
+    Ambient_Temperature = st.number_input("Ambient Temperature", value=safe_num("Ambient_Temperature", 25.0), step=0.1)
+    Machine_Age = st.number_input("Machine Age (years)", value=safe_num("Machine_Age", 5.0), step=1.0)
+    Operator_Experience = st.number_input("Operator Experience (years)", value=safe_num("Operator_Experience", 5.0), step=1.0)
+    Maintenance_Hours = st.number_input("Maintenance Hours (per month)", value=safe_num("Maintenance_Hours", 20.0), step=1.0)
+    Efficiency_Score = st.number_input("Efficiency Score", value=safe_num("Efficiency_Score", 0.05), step=0.01, format="%.2f")
+    Machine_Utilization = st.number_input("Machine Utilization", value=safe_num("Machine_Utilization", 0.5), step=0.01, format="%.2f")
+    sample_date = st.date_input("Sample date", value=vals.get("date", date.today()))
+    hour_val = st.slider("Hour of Day (0-23)", 0, 23, int(vals.get("hour", 9)))
+
+    Shift = st.selectbox("Shift", options=["Day", "Evening", "Night"], index=["Day","Evening","Night"].index(safe_cat("Shift", ["Day","Evening","Night"], "Day")))
+    Machine_Type = st.selectbox("Machine Type", options=["Type_A", "Type_B", "Type_C"], index=["Type_A","Type_B","Type_C"].index(safe_cat("Machine_Type", ["Type_A","Type_B","Type_C"], "Type_A")))
+    Material_Grade = st.selectbox("Material Grade", options=["Economy", "Standard", "Premium"], index=["Economy","Standard","Premium"].index(safe_cat("Material_Grade", ["Economy","Standard","Premium"], "Standard")))
     Day_of_Week = st.selectbox("Day of Week", options=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"],
-                               index=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"].index(vals.get("Day_of_Week","Friday")))
+                               index=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"].index(safe_cat("Day_of_Week", ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"], "Friday")))
 
     predict_clicked = st.button("🔮 Predict Output", key="predict_btn")
 
@@ -313,11 +303,10 @@ with right:
             st.info("Feature importance not available for this model type.")
     except Exception:
         st.info("Couldn't compute feature importance.")
-
     st.write("---")
     st.markdown("<div class='card'><b>Quick tips</b><br>Try the presets to demonstrate model sensitivity. Use the download button after prediction to save your inputs + prediction.</div>", unsafe_allow_html=True)
 
-# ---------- predictions, history and download ----------
+# ---------- prediction, history & download ----------
 if "history" not in st.session_state:
     st.session_state["history"] = []
 
@@ -376,7 +365,7 @@ if predict_clicked:
     csv = df_history.to_csv(index=False)
     st.download_button("Download history (CSV)", csv, "predictions_history.csv", "text/csv")
 
-# History table
+# Recent history
 if st.session_state.history:
     st.subheader("Recent predictions")
     dfh = pd.DataFrame(st.session_state.history)
