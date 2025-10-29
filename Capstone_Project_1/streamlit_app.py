@@ -1,5 +1,6 @@
 # Capstone_Project_1/streamlit_app.py
-# Full Streamlit app with robust import diagnostics and secure UI inputs.
+# Full Streamlit app with robust import diagnostics, safe UI inputs,
+# and categorical one-hot encoding to match saved pipeline.
 
 # -------------------- Robust import + startup diagnostics --------------------
 import os, sys, logging, json
@@ -125,7 +126,8 @@ def load_metadata(path=METADATA_PATH):
 
 def prepare_input_row(inputs, feature_columns):
     d = dict(inputs)
-    # derived features
+
+    # Derived numeric features
     d["Total_Cycle_Time"] = float(d.get("Cycle_Time", 0)) + float(d.get("Cooling_Time", 0))
     cycle = float(d.get("Cycle_Time", 0))
     cooling = float(d.get("Cooling_Time", 0))
@@ -134,7 +136,7 @@ def prepare_input_row(inputs, feature_columns):
     p = float(d.get("Injection_Pressure", 1))
     d["Temperature_Pressure_Ratio"] = float(d.get("Injection_Temperature", 0)) / (p + 1e-9)
 
-    # date/time
+    # Date/time features
     sample_date = d.get("date", date.today())
     if isinstance(sample_date, str):
         try:
@@ -152,13 +154,40 @@ def prepare_input_row(inputs, feature_columns):
     d["Year"] = dt.year
     d["DayOfWeek_num"] = dt.weekday()
 
+    # ----- One-hot encode categorical fields -----
+    # Expected categorical values:
+    #   Shift → Day, Evening, Night
+    #   Machine_Type → Type_A, Type_B, Type_C
+    #   Material_Grade → Economy, Standard, Premium
+    #   Day_of_Week → Monday ... Sunday
+
+    shift = d.get("Shift", "Day")
+    for s in ["Day", "Evening", "Night"]:
+        d[f"Shift_{s}"] = 1 if shift == s else 0
+
+    mtype = d.get("Machine_Type", "Type_A")
+    for m in ["Type_A", "Type_B", "Type_C"]:
+        d[f"Machine_Type_{m}"] = 1 if mtype == m else 0
+
+    grade = d.get("Material_Grade", "Standard")
+    for g in ["Economy", "Standard", "Premium"]:
+        d[f"Material_Grade_{g}"] = 1 if grade == g else 0
+
+    dow = d.get("Day_of_Week", "Monday")
+    for dname in ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]:
+        d[f"Day_of_Week_{dname}"] = 1 if dow == dname else 0
+
+    # Build DataFrame
     df = pd.DataFrame([d])
+
+    # Ensure all feature columns exist
     if feature_columns:
         for c in feature_columns:
             if c not in df.columns:
                 df[c] = 0
         df = df[feature_columns]
 
+    # Convert numerics
     for col in df.columns:
         try:
             df[col] = pd.to_numeric(df[col], errors="ignore")
