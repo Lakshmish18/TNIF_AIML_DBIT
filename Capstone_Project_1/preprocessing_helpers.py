@@ -1,98 +1,79 @@
 # Capstone_Project_1/preprocessing_helpers.py
 """
-Backward-compatible QuantileClipper.
-
-This version is intentionally tolerant of older saved pickles that used
-different internal attribute names (lower/upper, lower_quantile/upper_quantile,
-lower_, lower_bounds_, etc.). It sets multiple attribute names on fit()
-so older pickles and newer code both work.
+Compatibility helper for unpickling models that used a custom QuantileClipper.
+This version aims to be backward-compatible with different saved versions.
 """
-
+from typing import Optional
 import numpy as np
-from sklearn.base import TransformerMixin, BaseEstimator
-
+from sklearn.base import BaseEstimator, TransformerMixin
 
 class QuantileClipper(BaseEstimator, TransformerMixin):
-    """
-    Clips numeric features column-wise to the quantile range learned from the training data.
-
-    Backwards compatibility notes:
-    - older variants used attribute names like `lower`/`upper` or `lower_quantile`/`upper_quantile`
-    - this implementation sets all of those names so unpickling older objects works.
-    """
-
-    def __init__(self, lower_quantile: float = None, upper_quantile: float = None, lower: float = None, upper: float = None):
-        # Accept older param names as aliases
-        if lower_quantile is None and lower is not None:
-            lower_quantile = lower
-        if upper_quantile is None and upper is not None:
-            upper_quantile = upper
-
-        self.lower_quantile = 0.01 if lower_quantile is None else float(lower_quantile)
-        self.upper_quantile = 0.99 if upper_quantile is None else float(upper_quantile)
-
-        # historic aliases
-        self.lower = float(self.lower_quantile)
-        self.upper = float(self.upper_quantile)
-
-        # placeholders to be created in fit()
-        self.lower_ = None
-        self.upper_ = None
-        self.lower_bounds_ = None
-        self.upper_bounds_ = None
+    def __init__(self, lower: float = 0.01, upper: float = 0.99, lower_quantile: Optional[float] = None, upper_quantile: Optional[float] = None):
+        if lower_quantile is not None:
+            self.lower_quantile = float(lower_quantile)
+        else:
+            self.lower_quantile = float(lower)
+        if upper_quantile is not None:
+            self.upper_quantile = float(upper_quantile)
+        else:
+            self.upper_quantile = float(upper)
+        self.lower_bounds_: Optional[np.ndarray] = None
+        self.upper_bounds_: Optional[np.ndarray] = None
 
     def fit(self, X, y=None):
         X_arr = np.asarray(X, dtype=float)
-
-        # store quantile values under multiple attribute names
-        self.lower_ = float(self.lower_quantile)
-        self.upper_ = float(self.upper_quantile)
-        self.lower = self.lower_
-        self.upper = self.upper_
-
-        # compute bounds (nanquantile tolerates NaNs)
         try:
-            lb = np.nanquantile(X_arr, self.lower_, axis=0)
-            ub = np.nanquantile(X_arr, self.upper_, axis=0)
+            self.lower_bounds_ = np.nanquantile(X_arr, self.lower_quantile, axis=0)
+            self.upper_bounds_ = np.nanquantile(X_arr, self.upper_quantile, axis=0)
         except Exception:
-            X2 = X_arr.reshape(-1, 1)
-            lb = np.nanquantile(X2, self.lower_, axis=0)
-            ub = np.nanquantile(X2, self.upper_, axis=0)
-
-        # set bounds with multiple attribute names (compat)
-        self.lower_bounds_ = np.asarray(lb, dtype=float)
-        self.upper_bounds_ = np.asarray(ub, dtype=float)
-        self.lower_bounds = self.lower_bounds_
-        self.upper_bounds = self.upper_bounds_
-
+            x = X_arr.ravel()
+            self.lower_bounds_ = np.nanquantile(x, self.lower_quantile)
+            self.upper_bounds_ = np.nanquantile(x, self.upper_quantile)
         return self
 
     def transform(self, X):
-        # If unpickled object used other attribute names, try to pick them up
-        if getattr(self, "lower_bounds_", None) is None or getattr(self, "upper_bounds_", None) is None:
-            lb = getattr(self, "lower_bounds", None)
-            ub = getattr(self, "upper_bounds", None)
-            if lb is None or ub is None:
-                raise AttributeError("QuantileClipper appears not fitted: missing bounds.")
-            self.lower_bounds_ = np.asarray(lb, dtype=float)
-            self.upper_bounds_ = np.asarray(ub, dtype=float)
-
+        if self.lower_bounds_ is None or self.upper_bounds_ is None:
+            raise ValueError("QuantileClipper is not fitted yet. Call fit(X) before transform.")
         X_arr = np.asarray(X, dtype=float).copy()
-        lb = np.asarray(self.lower_bounds_, dtype=float)
-        ub = np.asarray(self.upper_bounds_, dtype=float)
+        lb = self.lower_bounds_
+        ub = self.upper_bounds_
+        try:
+            X_arr = np.maximum(X_arr, lb)
+            X_arr = np.minimum(X_arr, ub)
+        except Exception:
+            if X_arr.ndim == 1:
+                return np.clip(X_arr, lb, ub)
+            else:
+                for col in range(X_arr.shape[1]):
+                    lval = lb[col] if hasattr(lb, "__len__") and len(lb) > col else lb
+                    uval = ub[col] if hasattr(ub, "__len__") and len(ub) > col else ub
+                    X_arr[:, col] = np.clip(X_arr[:, col], lval, uval)
+        return X_arr
 
-        if X_arr.ndim == 1:
-            X_arr = X_arr.reshape(1, -1)
+    def __setstate__(self, state):
+        if isinstance(state, dict):
+            if "lower" in state and "lower_quantile" not in state:
+                state["lower_quantile"] = state.pop("lower")
+            if "upper" in state and "upper_quantile" not in state:
+                state["upper_quantile"] = state.pop("upper")
+            if "lower_" in state and "lower_bounds_" not in state:
+                state["lower_bounds_"] = state.pop("lower_")
+            if "upper_" in state and "upper_bounds_" not in state:
+                state["upper_bounds_"] = state.pop("upper_")
+        self.__dict__.update(state)
+        if not hasattr(self, "lower_quantile"):
+            self.lower_quantile = getattr(self, "lower", 0.01)
+        if not hasattr(self, "upper_quantile"):
+            self.upper_quantile = getattr(self, "upper", 0.99)
+        if not hasattr(self, "lower_bounds_"):
+            self.lower_bounds_ = None
+        if not hasattr(self, "upper_bounds_"):
+            self.upper_bounds_ = None
 
-        # If bounds are scalar, broadcast
-        if X_arr.shape[1] != lb.shape[0]:
-            if lb.size == 1:
-                lb = np.full((X_arr.shape[1],), lb.item())
-            if ub.size == 1:
-                ub = np.full((X_arr.shape[1],), ub.item())
-            if X_arr.shape[1] != lb.shape[0]:
-                raise ValueError(f"QuantileClipper: X has {X_arr.shape[1]} cols but bounds length is {lb.shape[0]}")
-
-        X_clipped = np.maximum(X_arr, lb)
-        X_clipped = np.minimum(X_clipped, ub)
-        return X_clipped
+    def __getstate__(self):
+        return {
+            "lower_quantile": self.lower_quantile,
+            "upper_quantile": self.upper_quantile,
+            "lower_bounds_": self.lower_bounds_,
+            "upper_bounds_": self.upper_bounds_,
+        }
